@@ -1,0 +1,78 @@
+name: Build Realme lunaa mainline kernel
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  kernel:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 350
+    steps:
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends git python3 openssl rsync             coreutils procps util-linux ca-certificates
+          df -h
+
+      - name: Clone pmbootstrap and device sources
+        run: |
+          git clone --depth 1 https://gitlab.postmarketos.org/postmarketOS/pmbootstrap.git pmbootstrap-src
+          git clone --depth 1 https://github.com/theleafir1/pmaports.git pmaports
+          git -C pmaports remote add upstream https://gitlab.postmarketos.org/postmarketOS/pmaports.git
+          git -C pmaports fetch --depth 1 upstream main
+          git clone --depth 1 --branch sc7280-7.2.y https://github.com/theleafir1/linux.git linux-lunaa
+          test -f linux-lunaa/arch/arm64/boot/dts/qcom/sm7325-realme-lunaa.dts
+          test -f linux-lunaa/kernel/time/timeconst.bc
+
+      - name: Preserve the kernel's tracked bc source in pmbootstrap rsync
+        run: |
+          # pmbootstrap --src uses the source tree's .gitignore as an rsync
+          # exclude list. The git negation '!kernel/time/timeconst.bc'
+          # is not honored by rsync --exclude-from.
+          sed -i '/^\*\.bc$/s/^/# /' linux-lunaa/.gitignore
+          grep -n 'timeconst.bc' linux-lunaa/.gitignore
+
+      - name: Configure pmbootstrap
+        run: |
+          chmod +x pmbootstrap-src/pmbootstrap.py
+          mkdir -p "$HOME/.local/bin"
+          ln -s "$GITHUB_WORKSPACE/pmbootstrap-src/pmbootstrap.py" "$HOME/.local/bin/pmbootstrap"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          # Initialize with defaults, then select the experimental port explicitly.
+          # This build produces an APK only; no flash or disk installation.
+          yes '' | timeout 300 "$HOME/.local/bin/pmbootstrap" -p "$GITHUB_WORKSPACE/pmaports" init
+          "$HOME/.local/bin/pmbootstrap" config device realme-lunaa
+          "$HOME/.local/bin/pmbootstrap" config ui console
+          "$HOME/.local/bin/pmbootstrap" config service_manager systemd
+          "$HOME/.local/bin/pmbootstrap" config mirrors.alpine https://dl-cdn.alpinelinux.org/alpine/
+          "$HOME/.local/bin/pmbootstrap" config mirrors.pmaports https://mirror.nura.eco/postmarketos/
+          "$HOME/.local/bin/pmbootstrap" config mirrors.systemd https://mirror.nura.eco/postmarketos/extra-repos/systemd/
+          "$HOME/.local/bin/pmbootstrap" status
+
+      - name: Build kernel with native ARM64 toolchain
+        run: |
+          # Native ARM64 runner; no QEMU and no cross compiler.
+          pmbootstrap --no-cross -j 4 build linux-postmarketos-qcom-sc7280 \
+            --src="$GITHUB_WORKSPACE/linux-lunaa" --force
+
+      - name: Inspect resulting packages and DTB
+        run: |
+          find "$HOME/.local/var/pmbootstrap/packages" -type f -name 'linux-postmarketos-qcom-sc7280*.apk' -print
+          pkg="$(find "$HOME/.local/var/pmbootstrap/packages" -type f -name 'linux-postmarketos-qcom-sc7280*.apk' | head -n 1)"
+          test -n "$pkg"
+          mkdir -p output
+          cp "$pkg" output/
+          # apk is a tar-format package; check for the target DTB.
+          tar -tzf "$pkg" | grep -F 'sm7325-realme-lunaa.dtb'
+
+      - name: Upload kernel APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: realme-lunaa-kernel-apk
+          path: output/*.apk
+          if-no-files-found: error
+          retention-days: 14

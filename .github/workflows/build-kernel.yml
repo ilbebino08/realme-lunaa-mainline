@@ -16,6 +16,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends git python3 openssl rsync             coreutils procps util-linux ca-certificates
           df -h
+          test "$(uname -m)" = aarch64
+          test "$(dpkg --print-architecture)" = arm64
 
       - name: Clone pmbootstrap and device sources
         run: |
@@ -54,8 +56,10 @@ jobs:
 
       - name: Build kernel with native ARM64 toolchain
         run: |
-          # Native ARM64 runner; no QEMU and no cross compiler.
-          pmbootstrap --no-cross -j 4 build linux-postmarketos-qcom-sc7280 \
+          # Native ARM64 runner, target aarch64: no cross-compilation required.
+          # Do not pass --no-cross: that option forces QEMU-only mode.
+          test "$(uname -m)" = aarch64
+          pmbootstrap -j 4 build linux-postmarketos-qcom-sc7280 \
             --src="$GITHUB_WORKSPACE/linux-lunaa" --force
 
       - name: Inspect resulting packages and DTB
